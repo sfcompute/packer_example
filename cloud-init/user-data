@@ -1,0 +1,11 @@
+#cloud-config
+disable_root: false
+users: []
+ssh_pwauth: true
+chpasswd:
+  list: |
+     root:password
+  expire: false
+runcmd:
+  - printf 'PasswordAuthentication yes\nPermitRootLogin yes\n' > /etc/ssh/sshd_config.d/10-sfc.conf
+  - systemctl restart sshd
