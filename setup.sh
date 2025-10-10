@@ -16,6 +16,8 @@ apt-get install -y \
   nvidia-fabricmanager-565 \
 ;
 
+# USER CHANGES HERE
+
 # Disable root ssh, and console access
 rm /etc/ssh/sshd_config.d/*
 usermod -p '!' root
@@ -23,8 +25,9 @@ usermod -p '!' root
 # Do basic cleanup (virt-sysprep can be used to further shrink the image) and
 # remove per-machine state.
 apt-get clean
+shopt -s dotglob
 rm -rf \
-  /tmp/* /tmp/.* \
-  /var/tmp/* /var/tmp/.* \
+  /tmp/* \
+  /var/tmp/* \
   /etc/ssh_host* \
   /etc/machine-id /var/lib/dbus/machine-id
