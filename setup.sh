@@ -29,5 +29,8 @@ shopt -s dotglob
 rm -rf \
   /tmp/* \
   /var/tmp/* \
-  /etc/ssh_host* \
-  /etc/machine-id /var/lib/dbus/machine-id
+  \
+  /etc/machine-id \
+  /etc/ssh/ssh_host* \
+  /var/lib/dbus/machine-id \
+;
