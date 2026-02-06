@@ -27,6 +27,7 @@ usermod -p '!' root
 apt-get clean
 
 printf 'uninitialized\n' >/etc/machine-id
+cloud-init clean --logs
 
 shopt -s dotglob
 rm -rf \
