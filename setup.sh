@@ -25,12 +25,17 @@ usermod -p '!' root
 # Do basic cleanup (virt-sysprep can be used to further shrink the image) and
 # remove per-machine state.
 apt-get clean
+
+printf 'uninitialized\n' >/etc/machine-id
+
 shopt -s dotglob
 rm -rf \
   /tmp/* \
   /var/tmp/* \
   \
-  /etc/machine-id \
+  /etc/hostname \
+  /etc/machine-info \
   /etc/ssh/ssh_host* \
   /var/lib/dbus/machine-id \
+  /var/lib/systemd/random-seed \
 ;
