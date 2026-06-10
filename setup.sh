@@ -22,6 +22,11 @@ apt-get install -y \
 rm /etc/ssh/sshd_config.d/*
 usermod -p '!' root
 
+# Currently, it takes a while to time out (in the newer networking set up for
+# SFC VMs) while waiting for non-existent proxy servers to reply and
+# `auto-apt-proxy` is intended for improving build times.
+apt-get -y remove auto-apt-proxy
+
 # Do basic cleanup (virt-sysprep can be used to further shrink the image) and
 # remove per-machine state.
 apt-get clean
