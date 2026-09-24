@@ -24,7 +24,7 @@ packer {
 
 variable "base_image_tag" {
   type    = string
-  default = "v20260910.033204"
+  default = "v20260924.213848"
 
   description = <<-EOT
     Which SF Compute base image release to build on (qemu.sfc_base only).
