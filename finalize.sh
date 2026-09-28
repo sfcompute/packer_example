@@ -19,7 +19,16 @@ echo "==> Removing build-time SSH access"
 # cloud-init seed wrote, and re-locks root. SF Compute injects the
 # customer's user and SSH key via its own cloud-init datasource at
 # launch, so the shipped image needs no login of its own.
-rm -f /etc/ssh/sshd_config.d/*
+# Name the two files the build creates rather than globbing the directory.
+# 10-packer.conf is the seed's runcmd override; 50-cloud-init.conf is what
+# cloud-init writes for the seed's `ssh_pwauth: true`. A glob would also take
+# 60-cloudimg-settings.conf, which Ubuntu's cloud image ships containing
+# `PasswordAuthentication no` -- and sshd_config only has that directive
+# commented out, so removing the drop-in silently falls back to OpenSSH's
+# default of yes. It would also delete anything you add in customize.sh.
+rm -f \
+  /etc/ssh/sshd_config.d/10-packer.conf \
+  /etc/ssh/sshd_config.d/50-cloud-init.conf
 usermod -p '!' root
 
 echo "==> Resetting per-machine identity"

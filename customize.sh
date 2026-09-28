@@ -34,7 +34,10 @@ apt-get install -y --no-install-recommends \
 # here -- the build VM has no GPUs and no network fabric):
 #   systemctl enable myapp.service
 
-# Install Python deps into a venv your jobs can use:
+# Install Python deps into a venv your jobs can use. Heavyweight wheels need
+# more room than the defaults give you -- torch pulls its own bundled CUDA
+# libraries and runs to several GB, so build with a bigger disk:
+#   packer build -only='qemu.sfc_base' -var 'disk_size=40G' .
 #   python3 -m venv /opt/venv
 #   /opt/venv/bin/pip install --no-cache-dir torch
 

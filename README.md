@@ -1,6 +1,6 @@
 # Build a custom SF Compute image with Packer
 
-A minimal, copyable example. Fork it, edit one file, run one command.
+A minimal, copyable example. Fork it, edit one file, run two commands.
 
 There are two starting points:
 
@@ -19,23 +19,59 @@ Both paths produce a **UEFI amd64 raw image**, which is what
 
 ## Requirements
 
+Packer 1.9 or newer, QEMU, and OVMF (UEFI firmware). Packer is not in the
+Ubuntu archive and was removed from Homebrew core, so install it from
+HashiCorp:
+
 ```bash
-# Linux
-sudo apt-get install -y packer qemu-system-x86 qemu-utils ovmf genisoimage
+# Linux (Ubuntu/Debian)
+wget -O- https://apt.releases.hashicorp.com/gpg \
+  | sudo gpg --dearmor -o /usr/share/keyrings/hashicorp-archive-keyring.gpg
+echo "deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] \
+https://apt.releases.hashicorp.com $(lsb_release -cs) main" \
+  | sudo tee /etc/apt/sources.list.d/hashicorp.list
+sudo apt-get update
+sudo apt-get install -y packer qemu-system-x86 qemu-utils ovmf xorriso jq
 
 # macOS
-brew install packer qemu xorriso
+brew tap hashicorp/tap
+brew install hashicorp/tap/packer qemu xorriso jq
 ```
 
-On macOS the VM runs under software emulation and the build is slow. On
-Linux, add `-var 'accelerator=kvm'` for a hardware-accelerated build.
+You also need the [`sf` CLI](https://docs.sfcompute.com/) to upload the
+result, and roughly 30 GB of free disk.
 
 ## Quick start
 
+Put your packages and configuration in **`customize.sh`** — that is the only
+file you need to touch. Everything else is boilerplate that makes the image
+boot on SF Compute.
+
 ```bash
 packer init .
+packer build -only='qemu.sfc_base' .
+```
+
+On Linux with KVM, add `-var 'accelerator=kvm'` — minutes instead of hours.
+You need read/write on `/dev/kvm` (`sudo usermod -aG kvm $USER`, then log out
+and back in):
+
+```bash
 packer build -only='qemu.sfc_base' -var 'accelerator=kvm' .
 ```
+
+Expect roughly 15 minutes on Linux with KVM, and a few hours on macOS under
+emulation. Packer downloads a 3.3 GB base image first. The result is a sparse
+20 GiB raw file — it takes far less room on disk, but `sf images upload`
+transfers the full 20 GiB. Need more space for your software? Add
+`-var 'disk_size=40G'` (the platform caps images at 75 GiB).
+
+`-only` matters: without it Packer builds **both** starting points at once. If
+you mistype the name, Packer runs nothing and still exits 0, so check that it
+actually printed a build.
+
+Re-running? Packer refuses to overwrite `output/`. Pass `-force`, or
+`rm -rf output/` first.
 
 The image lands at `output/sfc_base/ubuntu-24.04-cuda-13.2-custom.raw`.
 Upload it:
@@ -57,8 +93,10 @@ runs as root inside the build VM on both starting points. Everything
 else in this repo is boilerplate that makes the resulting image boot
 correctly on SF Compute.
 
-If you only ever build on our base images, delete `install-nvidia.sh`
-and its `provisioner` block in `build.pkr.hcl`.
+If you only ever build on our base images, delete `install-nvidia.sh`, its
+`provisioner` block in `build.pkr.hcl`, and the `source "qemu" "ubuntu"`
+block — otherwise the repo still offers a path that no longer installs a
+driver.
 
 ## Choosing a base image
 
@@ -75,7 +113,7 @@ with `-var`:
 
 ```bash
 packer build -only='qemu.sfc_base' \
-  -var 'base_image_tag=v20261001.120000' \
+  -var 'base_image_tag=<tag from latest.json>' \
   -var 'base_image_name=ubuntu-22.04-cuda-13.1' .
 ```
 
@@ -108,7 +146,7 @@ one, it must:
 
 - be a **raw**, UEFI, amd64 (x86_64) image — qcow2 is not supported
 - resize its root filesystem at boot to fill the instance's disk
-- include drivers for **virtio-net** and **mlx5Gen Virtual Function**
+- include the `virtio_net` and `mlx5_core` kernel modules (the latter drives the "mlx5Gen Virtual Function" NIC)
 - include **cloud-init**, with its network configuration step enabled
 - be no larger than 75 GiB
 
@@ -120,6 +158,21 @@ The SF Compute base images ship all of it.
 
 See the [Images documentation](https://docs.sfcompute.com/preview/images)
 for the full picture.
+
+## When a build fails
+
+| What you see | What to do |
+|---|---|
+| `E: Unable to locate package packer` | Packer is not in the Ubuntu archive. See [Requirements](#requirements). |
+| `packer init` reports an unknown command | Your Packer predates 1.7. Ubuntu 22.04 ships 1.6.6; install a current one per Requirements. |
+| `Output directory 'output/...' already exists` | `packer build -force ...`, or `rm -rf output/`. |
+| A 404 fetching `SHA256SUMS` | The tag you pinned predates checksums. Add `-var 'base_image_checksum=none'`. |
+| `Could not access KVM kernel module` | No `/dev/kvm`, or you are not in the `kvm` group. Drop `-var 'accelerator=kvm'` to build under emulation. |
+| QEMU exits immediately on macOS | Drop `-var 'accelerator=kvm'`; macOS has no KVM. |
+| `Could not open '/usr/share/OVMF/...'` | Firmware auto-detection missed yours. Pass `-var 'efi_firmware_code=...' -var 'efi_firmware_vars=...'`; both must be the same variant, so a 4M code file needs a 4M vars file. |
+| `Timeout waiting for SSH` | Usually a slow emulated boot. Build on Linux with KVM, or raise `ssh_timeout` in `build.pkr.hcl`. |
+| A step you added to `customize.sh` failed | Packer deletes `output/` on failure. Re-run with `-on-error=abort` to keep the VM and disk so you can look. |
+| The build succeeded but `packer` printed no build | You mistyped `-only`. Packer exits 0 having run nothing. |
 
 ## Files
 

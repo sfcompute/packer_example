@@ -10,10 +10,18 @@
 # you need to touch.
 
 packer {
+  # `packer init` and external required_plugins both arrived in 1.7. Ubuntu
+  # 22.04 still ships Packer 1.6.6, which would fail on `packer init` with an
+  # unknown-command error that says nothing about why; this turns that into a
+  # version message. See the README for where to get a current Packer.
+  required_version = ">= 1.9.0"
+
   required_plugins {
     qemu = {
-      source  = "github.com/hashicorp/qemu"
-      version = "~> 1"
+      source = "github.com/hashicorp/qemu"
+      # efi_boot / efi_firmware_* are used below and are not in 1.0.x's
+      # earliest releases.
+      version = ">= 1.0.10"
     }
   }
 }
@@ -135,8 +143,7 @@ variable "disk_size" {
 }
 
 locals {
-  # Public, unauthenticated CDN in front of the R2 bucket the release
-  # workflow publishes to.
+  # Public, unauthenticated CDN serving the SF Compute base images.
   sfc_base_url = "https://tiny-llama.sfcc.xyz/${var.base_image_tag}"
 
   ubuntu_base_url = "https://cloud-images.ubuntu.com/${var.ubuntu_codename}/current"
@@ -145,17 +152,18 @@ locals {
   # it" fallback lives here rather than on the variable.
   base_image_checksum = var.base_image_checksum != "" ? var.base_image_checksum : "file:${local.sfc_base_url}/SHA256SUMS"
 
-  # Probe for OVMF in the same order as sfc_base_image's test-local.sh,
-  # newest layout first. Packer's own default is /usr/share/OVMF/
+  # Probe for OVMF, newest layout first. Packer's own default is /usr/share/OVMF/
   # OVMF_VARS.fd, which does not exist on Ubuntu 24.04 -- the build gets
   # as far as booting and then dies on a missing file, so we resolve it
-  # here instead. The fallbacks keep the error message pointing at a
-  # real path when nothing is found.
+  # here instead. If nothing matches, the fallback is the common Linux
+  # path; set -var efi_firmware_code=... -var efi_firmware_vars=... to point
+  # at yours (both must be the same variant -- a 4M code file needs 4M vars).
   ovmf_code = var.efi_firmware_code != "" ? var.efi_firmware_code : try([
     for p in [
       "/usr/share/OVMF/OVMF_CODE_4M.fd",
       "/usr/share/OVMF/OVMF_CODE.fd",
-      "/opt/homebrew/share/qemu/edk2-x86_64-code.fd",
+      "/opt/homebrew/share/qemu/edk2-x86_64-code.fd", # Homebrew, Apple Silicon
+      "/usr/local/share/qemu/edk2-x86_64-code.fd",    # Homebrew, Intel
     ] : p if fileexists(p)
   ][0], "/usr/share/OVMF/OVMF_CODE_4M.fd")
 
@@ -163,7 +171,8 @@ locals {
     for p in [
       "/usr/share/OVMF/OVMF_VARS_4M.fd",
       "/usr/share/OVMF/OVMF_VARS.fd",
-      "/opt/homebrew/share/qemu/edk2-i386-vars.fd",
+      "/opt/homebrew/share/qemu/edk2-i386-vars.fd", # Homebrew, Apple Silicon
+      "/usr/local/share/qemu/edk2-i386-vars.fd",    # Homebrew, Intel
     ] : p if fileexists(p)
   ][0], "/usr/share/OVMF/OVMF_VARS_4M.fd")
 
