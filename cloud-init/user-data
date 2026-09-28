@@ -1,11 +1,20 @@
 #cloud-config
+# Build-time only. This seed opens root SSH so Packer can run the
+# provisioners; finalize.sh removes all of it before the image ships.
+#
+# The image itself deliberately has no users: SF Compute injects the
+# customer's user and SSH key via its own cloud-init datasource when an
+# instance launches.
 disable_root: false
 users: []
 ssh_pwauth: true
 chpasswd:
-  list: |
-     root:password
   expire: false
+  users:
+    - name: root
+      password: packer
+      type: text
 runcmd:
-  - printf 'PasswordAuthentication yes\nPermitRootLogin yes\n' > /etc/ssh/sshd_config.d/10-sfc.conf
-  - systemctl restart sshd
+  # The unit is ssh.service on both jammy and noble (sshd is an alias).
+  - printf 'PasswordAuthentication yes\nPermitRootLogin yes\n' > /etc/ssh/sshd_config.d/10-packer.conf
+  - systemctl restart ssh

@@ -1,22 +1,186 @@
-# Example Ubuntu Jammy VM Image
+# Build a custom SF Compute image with Packer
 
-This is a small example of building an image with packer that one can use with
-SFC's custom (user provided) VM images system. After building, and starting a VM
-with this image on the Nvidia h100 platform, you should be able to run
-`nvidia-smi` within the VM and see the GPUs listed.
+A minimal, copyable example. Fork it, edit one file, run two commands.
 
-# Building
+There are two starting points:
 
-After installing the necessary dependencies (QEMU, optionally KVM, and packer):
+| Start from | Build with | You get |
+|---|---|---|
+| **An SF Compute base image** (recommended) | `-only='qemu.sfc_base'` | NVIDIA driver, fabric manager, CUDA and the DOCA-OFED / InfiniBand stack already installed and known-good together. You add your software on top. |
+| **A stock Ubuntu cloud image** | `-only='qemu.ubuntu'` | A bare Ubuntu image. `install-nvidia.sh` adds a driver and fabric manager. No InfiniBand. |
+
+Prefer the first unless you specifically need to start from bare Ubuntu.
+Pairing an NVIDIA driver with a CUDA version, and layering DOCA-OFED
+underneath it in the right order, is fiddly and fails in ways that only
+show up under load — our base images have that settled.
+
+Both paths produce a **UEFI amd64 raw image**, which is what
+`sf images upload` accepts.
+
+## Requirements
+
+Packer 1.9 or newer, QEMU, and OVMF (UEFI firmware). Packer is not in the
+Ubuntu archive and was removed from Homebrew core, so install it from
+HashiCorp:
 
 ```bash
-packer build ./jammy.pkr.hcl
+# Linux (Ubuntu/Debian)
+wget -O- https://apt.releases.hashicorp.com/gpg \
+  | sudo gpg --dearmor -o /usr/share/keyrings/hashicorp-archive-keyring.gpg
+echo "deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] \
+https://apt.releases.hashicorp.com $(lsb_release -cs) main" \
+  | sudo tee /etc/apt/sources.list.d/hashicorp.list
+sudo apt-get update
+sudo apt-get install -y packer qemu-system-x86 qemu-utils ovmf xorriso jq
+
+# macOS
+brew tap hashicorp/tap
+brew install hashicorp/tap/packer qemu xorriso jq
 ```
 
-The built VM image will be located at `output/ubuntu_jammy.img`.
+You also need the [`sf` CLI](https://docs.sfcompute.com/) to upload the
+result, and roughly 30 GB of free disk.
 
-# Customizing
+## Quick start
 
-Basic customizations can be added to `setup.sh` if the reader wants to install
-additional packages and doesn't need to change their Linux distribution. See the
-line marked `# USER CHANGES HERE` for the recommended location.
+Put your packages and configuration in **`customize.sh`** — that is the only
+file you need to touch. Everything else is boilerplate that makes the image
+boot on SF Compute.
+
+```bash
+packer init .
+packer build -only='qemu.sfc_base' .
+```
+
+On Linux with KVM, add `-var 'accelerator=kvm'` — minutes instead of hours.
+You need read/write on `/dev/kvm` (`sudo usermod -aG kvm $USER`, then log out
+and back in):
+
+```bash
+packer build -only='qemu.sfc_base' -var 'accelerator=kvm' .
+```
+
+Expect roughly 15 minutes on Linux with KVM, and a few hours on macOS under
+emulation. Packer downloads a 3.3 GB base image first. The result is a sparse
+20 GiB raw file — it takes far less room on disk, but `sf images upload`
+transfers the full 20 GiB. Need more space for your software? Add
+`-var 'disk_size=40G'` (the platform caps images at 75 GiB).
+
+`-only` matters: without it Packer builds **both** starting points at once. If
+you mistype the name, Packer runs nothing and still exits 0, so check that it
+actually printed a build.
+
+Re-running? Packer refuses to overwrite `output/`. Pass `-force`, or
+`rm -rf output/` first.
+
+The image lands at `output/sfc_base/ubuntu-24.04-cuda-13.2-custom.raw`.
+Upload it:
+
+```bash
+sf images upload --name my-image --file output/sfc_base/ubuntu-24.04-cuda-13.2-custom.raw
+```
+
+To start from stock Ubuntu instead:
+
+```bash
+packer build -only='qemu.ubuntu' -var 'accelerator=kvm' .
+```
+
+## Making it yours
+
+Edit **`customize.sh`**. That is the whole customization surface — it
+runs as root inside the build VM on both starting points. Everything
+else in this repo is boilerplate that makes the resulting image boot
+correctly on SF Compute.
+
+If you only ever build on our base images, delete `install-nvidia.sh`, its
+`provisioner` block in `build.pkr.hcl`, and the `source "qemu" "ubuntu"`
+block — otherwise the repo still offers a path that no longer installs a
+driver.
+
+## Choosing a base image
+
+`build.pkr.hcl` pins a specific release by default, so repeated builds
+reproduce the same bytes. To see what is current:
+
+```bash
+curl -fsSL https://tiny-llama.sfcc.xyz/latest.json | jq -r '.tag, (.images[].name)'
+```
+
+`latest.json` is the published index of the newest release: the tag, and
+every image in it with its URL, SHA256 and size. Point the build at one
+with `-var`:
+
+```bash
+packer build -only='qemu.sfc_base' \
+  -var 'base_image_tag=<tag from latest.json>' \
+  -var 'base_image_name=ubuntu-22.04-cuda-13.1' .
+```
+
+Then pin that tag in `build.pkr.hcl` so your builds stay reproducible.
+
+Integrity is checked against the `SHA256SUMS` published alongside each
+release; Packer fetches it and picks the line matching the image it is
+downloading. Releases published before `SHA256SUMS` existed don't have
+one, and Packer will fail with a 404 — for those, pass
+`-var 'base_image_checksum=none'`.
+
+## What the boilerplate is doing
+
+An image is a template that many instances boot from, so it must not
+carry anything identifying the machine that built it. `finalize.sh`
+handles that: it removes the build-time SSH access, resets the machine
+ID, clears cloud-init state, and deletes the SSH host keys. It runs
+last, and nothing can run over SSH after it.
+
+The image ships with **no users and a locked root account**. That is
+deliberate — SF Compute injects your user and SSH key through its own
+cloud-init datasource when an instance launches. The root password in
+`cloud-init/user-data` exists only so Packer can log in during the
+build, and `finalize.sh` removes it.
+
+## Image requirements
+
+If you build your own template from scratch rather than copying this
+one, it must:
+
+- be a **raw**, UEFI, amd64 (x86_64) image — qcow2 is not supported
+- resize its root filesystem at boot to fill the instance's disk
+- include the `virtio_net` and `mlx5_core` kernel modules (the latter drives the "mlx5Gen Virtual Function" NIC)
+- include **cloud-init**, with its network configuration step enabled
+- be no larger than 75 GiB
+
+For InfiniBand, it also needs the NVIDIA DOCA-OFED stack (installed
+*before* the NVIDIA driver, since `nvidia-peermem` builds against
+whatever RDMA symbols are present), `openibd.service` loading the IB
+modules at boot, and `nvidia-peermem` loaded at boot for GPUDirect RDMA.
+The SF Compute base images ship all of it.
+
+See the [Images documentation](https://docs.sfcompute.com/preview/images)
+for the full picture.
+
+## When a build fails
+
+| What you see | What to do |
+|---|---|
+| `E: Unable to locate package packer` | Packer is not in the Ubuntu archive. See [Requirements](#requirements). |
+| `packer init` reports an unknown command | Your Packer predates 1.7. Ubuntu 22.04 ships 1.6.6; install a current one per Requirements. |
+| `Output directory 'output/...' already exists` | `packer build -force ...`, or `rm -rf output/`. |
+| A 404 fetching `SHA256SUMS` | The tag you pinned predates checksums. Add `-var 'base_image_checksum=none'`. |
+| `Could not access KVM kernel module` | No `/dev/kvm`, or you are not in the `kvm` group. Drop `-var 'accelerator=kvm'` to build under emulation. |
+| QEMU exits immediately on macOS | Drop `-var 'accelerator=kvm'`; macOS has no KVM. |
+| `Could not open '/usr/share/OVMF/...'` | Firmware auto-detection missed yours. Pass `-var 'efi_firmware_code=...' -var 'efi_firmware_vars=...'`; both must be the same variant, so a 4M code file needs a 4M vars file. |
+| `Timeout waiting for SSH` | Usually a slow emulated boot. Build on Linux with KVM, or raise `ssh_timeout` in `build.pkr.hcl`. |
+| A step you added to `customize.sh` failed | Packer deletes `output/` on failure. Re-run with `-on-error=abort` to keep the VM and disk so you can look. |
+| The build succeeded but `packer` printed no build | You mistyped `-only`. Packer exits 0 having run nothing. |
+
+## Files
+
+| File | Purpose |
+|---|---|
+| `customize.sh` | **Edit this.** Your packages and configuration. |
+| `build.pkr.hcl` | Packer template: the two sources and the build. |
+| `install-nvidia.sh` | Driver + fabric manager, `qemu.ubuntu` path only. |
+| `finalize.sh` | Generalizes the image. Must run last. |
+| `cloud-init/user-data` | Build-time-only seed that opens SSH for Packer. |
+| `cloud-init/meta-data` | Cloud-init instance metadata. |
