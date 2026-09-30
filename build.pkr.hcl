@@ -32,18 +32,19 @@ packer {
 
 variable "base_image_tag" {
   type    = string
-  default = "v20260924.213848"
+  default = ""
 
   description = <<-EOT
-    Which SF Compute base image release to build on (qemu.sfc_base only).
+    Pin the build to one SF Compute base image release (qemu.sfc_base only).
 
-    This is a pin, on purpose: the same tag gives you the same bytes
-    every time. To move to the current release:
+    Empty, the default, resolves whatever is current at build time. The
+    build prints the release it picked, so check the log if you need to
+    know which one you got.
 
-      curl -fsSL https://tiny-llama.sfcc.xyz/latest.json | jq -r .tag
-
-    That endpoint also lists every image in the release with its URL,
-    SHA256 and size -- see the README.
+    Set this to a tag to pin it, which is what you want if you need two
+    builds to produce the same bytes. Tags look like v20260930.063326 and
+    are listed by the release index; releases published before that index
+    existed cannot be pinned this way.
   EOT
 }
 
@@ -79,24 +80,6 @@ variable "nvidia_driver_branch" {
     same branch -- fabric manager refuses to start against a driver
     from a different branch, so they have to move as a set. Check what
     you actually got with `dpkg -l 'nvidia-headless-*'`.
-  EOT
-}
-
-variable "base_image_checksum" {
-  type    = string
-  default = ""
-
-  description = <<-EOT
-    Override the integrity check on the base image (qemu.sfc_base only).
-
-    Empty (the default) derives it from the tag, as
-    "file:<base>/<tag>/SHA256SUMS" -- Packer fetches that file and picks
-    the line matching the image it is downloading, exactly as it does
-    for Ubuntu's cloud images.
-
-    Releases published before SHA256SUMS existed have no such file and
-    Packer fails with a 404. For those, and only those, pass
-    -var 'base_image_checksum=none' to skip the check.
   EOT
 }
 
@@ -142,15 +125,21 @@ variable "disk_size" {
   EOT
 }
 
+# The release index lists each image's sha256 beside its URL, so the digest
+# below comes from the same document as the download and the two cannot
+# disagree.
+data "http" "sfc_release" {
+  url = var.base_image_tag == "" ? "https://tiny-llama.sfcc.xyz/latest.json" : "https://tiny-llama.sfcc.xyz/${var.base_image_tag}/manifest.json"
+}
+
 locals {
-  # Public, unauthenticated CDN serving the SF Compute base images.
-  sfc_base_url = "https://tiny-llama.sfcc.xyz/${var.base_image_tag}"
+  sfc_release = jsondecode(data.http.sfc_release.body)
+
+  # Empty if base_image_name is not in the release, which fails the build
+  # here rather than downloading something else.
+  sfc_image = [for i in local.sfc_release.images : i if i.name == var.base_image_name][0]
 
   ubuntu_base_url = "https://cloud-images.ubuntu.com/${var.ubuntu_codename}/current"
-
-  # Variable defaults can't reference locals, so the "empty means derive
-  # it" fallback lives here rather than on the variable.
-  base_image_checksum = var.base_image_checksum != "" ? var.base_image_checksum : "file:${local.sfc_base_url}/SHA256SUMS"
 
   # Probe for OVMF, newest layout first. Packer's own default is /usr/share/OVMF/
   # OVMF_VARS.fd, which does not exist on Ubuntu 24.04 -- the build gets
@@ -201,11 +190,8 @@ source "qemu" "sfc_base" {
   # The qcow2 rather than the .raw published alongside it: same image,
   # ~3G instead of ~12G over the wire. format = "raw" below converts on
   # the way out, so what lands in output/ is still raw.
-  iso_url = "${local.sfc_base_url}/${var.base_image_name}.qcow2"
-  # Released tags publish a SHA256SUMS covering every artifact; Packer
-  # picks the line matching the iso_url basename. Releases built before
-  # SHA256SUMS existed have no such file -- see base_image_checksum.
-  iso_checksum = local.base_image_checksum
+  iso_url      = local.sfc_image.qcow2.url
+  iso_checksum = "sha256:${local.sfc_image.qcow2.sha256}"
 
   vm_name          = "${var.base_image_name}-custom.raw"
   output_directory = "output/sfc_base"

@@ -100,30 +100,35 @@ driver.
 
 ## Choosing a base image
 
-`build.pkr.hcl` pins a specific release by default, so repeated builds
-reproduce the same bytes. To see what is current:
+By default the build resolves the current release at build time — there is no
+version to keep up to date in this repo. Packer prints the one it picked:
+
+```
+Trying https://tiny-llama.sfcc.xyz/v20260930.063326/ubuntu-24.04-cuda-13.2.qcow2
+```
+
+To see what is available:
 
 ```bash
 curl -fsSL https://tiny-llama.sfcc.xyz/latest.json | jq -r '.tag, (.images[].name)'
 ```
 
-`latest.json` is the published index of the newest release: the tag, and
-every image in it with its URL, SHA256 and size. Point the build at one
-with `-var`:
+Pick a different image from the release with `base_image_name`:
 
 ```bash
-packer build -only='qemu.sfc_base' \
-  -var 'base_image_tag=<tag from latest.json>' \
-  -var 'base_image_name=ubuntu-22.04-cuda-13.1' .
+packer build -only='qemu.sfc_base' -var 'base_image_name=ubuntu-22.04-cuda-13.1' .
 ```
 
-Then pin that tag in `build.pkr.hcl` so your builds stay reproducible.
+**If you need two builds to produce the same bytes, pin the release.** Tracking
+the latest means a rebuild next month starts from a different base:
 
-Integrity is checked against the `SHA256SUMS` published alongside each
-release; Packer fetches it and picks the line matching the image it is
-downloading. Releases published before `SHA256SUMS` existed don't have
-one, and Packer will fail with a 404 — for those, pass
-`-var 'base_image_checksum=none'`.
+```bash
+packer build -only='qemu.sfc_base' -var 'base_image_tag=<tag from latest.json>' .
+```
+
+Integrity needs nothing from you. The release index lists each image's sha256
+next to its URL, and the build verifies the download against it — same
+document, so the two cannot disagree.
 
 ## What the boilerplate is doing
 
@@ -166,7 +171,9 @@ for the full picture.
 | `E: Unable to locate package packer` | Packer is not in the Ubuntu archive. See [Requirements](#requirements). |
 | `packer init` reports an unknown command | Your Packer predates 1.7. Ubuntu 22.04 ships 1.6.6; install a current one per Requirements. |
 | `Output directory 'output/...' already exists` | `packer build -force ...`, or `rm -rf output/`. |
-| A 404 fetching `SHA256SUMS` | The tag you pinned predates checksums. Add `-var 'base_image_checksum=none'`. |
+| `Datasource.Execute failed: HTTP request error. Response code: 404` | The tag you pinned has no release index. Drop `-var base_image_tag` to use the current release, or pick a tag from `latest.json`. |
+| `invalid checksum: encoding/hex: invalid byte` from `packer validate` | Plain `validate` does not run data sources, so the digest is still unresolved. Use `packer validate -evaluate-datasources .`. |
+| `The given key does not identify an element in this collection value` | `base_image_name` is not in that release. List the names with the `jq` command under [Choosing a base image](#choosing-a-base-image). |
 | `Could not access KVM kernel module` | No `/dev/kvm`, or you are not in the `kvm` group. Drop `-var 'accelerator=kvm'` to build under emulation. |
 | QEMU exits immediately on macOS | Drop `-var 'accelerator=kvm'`; macOS has no KVM. |
 | `Could not open '/usr/share/OVMF/...'` | Firmware auto-detection missed yours. Pass `-var 'efi_firmware_code=...' -var 'efi_firmware_vars=...'`; both must be the same variant, so a 4M code file needs a 4M vars file. |
