@@ -61,14 +61,25 @@ packer build -only='qemu.sfc_base' -var 'accelerator=kvm' .
 ```
 
 Expect roughly 15 minutes on Linux with KVM, and a few hours on macOS under
-emulation. Packer downloads a 3.3 GB base image first. The result is a sparse
+emulation. Packer downloads the base image first (~3.5 GB). The result is a sparse
 20 GiB raw file — it takes far less room on disk, but `sf images upload`
 transfers the full 20 GiB. Need more space for your software? Add
 `-var 'disk_size=40G'` (the platform caps images at 75 GiB).
 
-`-only` matters: without it Packer builds **both** starting points at once. If
-you mistype the name, Packer runs nothing and still exits 0, so check that it
-actually printed a build.
+`-only` matters: without it Packer builds **both** starting points at once.
+Mistype the name and Packer lists the valid ones and exits without building.
+
+Want to check the template before building? `validate` doesn't fetch anything
+unless you ask it to, so it can't yet know which base image to download — pass
+`-evaluate-datasources`:
+
+```bash
+packer validate -evaluate-datasources .
+```
+
+Without the flag it fails with `invalid checksum: encoding/hex: invalid byte:
+U+003C '<'`, which doesn't sound like the real problem. `packer build` needs no
+such flag.
 
 Re-running? Packer refuses to overwrite `output/`. Pass `-force`, or
 `rm -rf output/` first.
@@ -80,11 +91,23 @@ Upload it:
 sf images upload --name my-image --file output/sfc_base/ubuntu-24.04-cuda-13.2-custom.raw
 ```
 
+Before you push 20 GiB, confirm it is what the platform expects:
+
+```bash
+qemu-img info output/sfc_base/ubuntu-24.04-cuda-13.2-custom.raw
+```
+
+You want `file format: raw` and a virtual size at or under 75 GiB. The real
+test is booting an instance from it — do that before you rely on the image.
+
 To start from stock Ubuntu instead:
 
 ```bash
-packer build -only='qemu.ubuntu' -var 'accelerator=kvm' .
+packer build -only='qemu.ubuntu' .
 ```
+
+That one lands at `output/ubuntu/ubuntu-noble-custom.raw` and uploads the same
+way.
 
 ## Making it yours
 
@@ -93,37 +116,58 @@ runs as root inside the build VM on both starting points. Everything
 else in this repo is boilerplate that makes the resulting image boot
 correctly on SF Compute.
 
-If you only ever build on our base images, delete `install-nvidia.sh`, its
-`provisioner` block in `build.pkr.hcl`, and the `source "qemu" "ubuntu"`
-block — otherwise the repo still offers a path that no longer installs a
-driver.
+If you only ever build on our base images, you can delete the stock-Ubuntu
+path — otherwise the repo still offers a route that no longer installs a
+driver. Remove all four, or the template will not load:
+
+- `install-nvidia.sh`
+- its `provisioner` block in `build.pkr.hcl`
+- the `source "qemu" "ubuntu"` block
+- the `"source.qemu.ubuntu"` line from the `build` block's `sources` list
+
+The `ubuntu_codename` and `nvidia_driver_branch` variables become unused too,
+and can go.
 
 ## Choosing a base image
 
-`build.pkr.hcl` pins a specific release by default, so repeated builds
-reproduce the same bytes. To see what is current:
+By default the build resolves the current release at build time — there is no
+version to keep up to date in this repo. Packer prints the one it picked:
+
+Look for the `Trying ...` line in the output — it names the release tag.
+
+To see what is available in the SF Compute release index (`tiny-llama.sfcc.xyz`,
+operated by SF Compute):
 
 ```bash
 curl -fsSL https://tiny-llama.sfcc.xyz/latest.json | jq -r '.tag, (.images[].name)'
 ```
 
-`latest.json` is the published index of the newest release: the tag, and
-every image in it with its URL, SHA256 and size. Point the build at one
-with `-var`:
+Pick a different image from the release with `base_image_name`:
 
 ```bash
-packer build -only='qemu.sfc_base' \
-  -var 'base_image_tag=<tag from latest.json>' \
-  -var 'base_image_name=ubuntu-22.04-cuda-13.1' .
+packer build -only='qemu.sfc_base' -var 'base_image_name=ubuntu-22.04-cuda-13.1' .
 ```
 
-Then pin that tag in `build.pkr.hcl` so your builds stay reproducible.
+The output filename follows the image name, so that one lands at
+`output/sfc_base/ubuntu-22.04-cuda-13.1-custom.raw`.
 
-Integrity is checked against the `SHA256SUMS` published alongside each
-release; Packer fetches it and picks the line matching the image it is
-downloading. Releases published before `SHA256SUMS` existed don't have
-one, and Packer will fail with a 404 — for those, pass
-`-var 'base_image_checksum=none'`.
+**Pin the release if you need a repeatable starting point.** Tracking the latest
+means a rebuild next month begins from a different base image — different driver,
+CUDA and kernel. Pinning fixes that. It does not make the build bit-for-bit
+reproducible: `customize.sh` still installs whatever the Ubuntu archive has that
+day.
+
+```bash
+packer build -only='qemu.sfc_base' -var 'base_image_tag=<tag from latest.json>' .
+```
+
+You don't supply a checksum. The release index lists each image's sha256 beside
+its URL and the build enforces it, so a corrupted or truncated download fails
+instead of producing a broken image.
+
+Each build writes `output/sfc_base/manifest.json` recording the release it
+resolved. That is where to find the tag to pass to `base_image_tag` if you want
+to rebuild on the same base.
 
 ## What the boilerplate is doing
 
@@ -138,6 +182,24 @@ deliberate — SF Compute injects your user and SSH key through its own
 cloud-init datasource when an instance launches. The root password in
 `cloud-init/user-data` exists only so Packer can log in during the
 build, and `finalize.sh` removes it.
+
+## When a build fails
+
+| What you see | What to do |
+|---|---|
+| `E: Unable to locate package packer` | Packer is not in the Ubuntu archive. See [Requirements](#requirements). |
+| `packer init` reports an unknown command | Your Packer predates 1.7. Ubuntu 22.04 ships 1.6.6; install a current one per Requirements. |
+| `Output directory 'output/...' already exists` | `packer build -force ...`, or `rm -rf output/`. |
+| `Datasource.Execute failed: ... Response code: 404` | The tag you pinned has no release index — pick one from `latest.json`, or drop `-var base_image_tag`. If you did not pin a tag, the index itself is missing: check with `curl -fsSL https://tiny-llama.sfcc.xyz/latest.json`. |
+| `Datasource.Execute failed: ... dial tcp ... no such host`, or `connection refused` | The build looks up the base image over the network before it starts, for either starting point. Check you can reach `https://tiny-llama.sfcc.xyz/latest.json`; behind a proxy, set `HTTPS_PROXY`. |
+| `Call to function "jsondecode" failed: invalid character '<'` | Something returned HTML instead of the release index — usually a captive portal or a proxy login page. Get past it in a browser, then retry. |
+| `invalid checksum: encoding/hex: invalid byte` from `packer validate` | Plain `validate` does not run data sources, so the digest is still unresolved. Use `packer validate -evaluate-datasources .`. |
+| `The given key does not identify an element in this collection value` | `base_image_name` is not in that release. List the names with the `jq` command under [Choosing a base image](#choosing-a-base-image). |
+| `Could not access KVM kernel module` | No `/dev/kvm`, or you are not in the `kvm` group. Drop `-var 'accelerator=kvm'` to build under emulation. |
+| QEMU exits immediately on macOS | Drop `-var 'accelerator=kvm'`; macOS has no KVM. |
+| `Could not open '/usr/share/OVMF/...'` | Firmware auto-detection missed yours. Pass `-var 'efi_firmware_code=...' -var 'efi_firmware_vars=...'`; both must be the same variant, so a 4M code file needs a 4M vars file. |
+| `Timeout waiting for SSH` | Usually a slow emulated boot. Build on Linux with KVM, or raise `ssh_timeout` in `build.pkr.hcl`. |
+| A step you added to `customize.sh` failed | Packer deletes `output/` on failure. Re-run with `-on-error=abort` to keep the VM and disk so you can look. |
 
 ## Image requirements
 
@@ -158,21 +220,6 @@ The SF Compute base images ship all of it.
 
 See the [Images documentation](https://docs.sfcompute.com/preview/images)
 for the full picture.
-
-## When a build fails
-
-| What you see | What to do |
-|---|---|
-| `E: Unable to locate package packer` | Packer is not in the Ubuntu archive. See [Requirements](#requirements). |
-| `packer init` reports an unknown command | Your Packer predates 1.7. Ubuntu 22.04 ships 1.6.6; install a current one per Requirements. |
-| `Output directory 'output/...' already exists` | `packer build -force ...`, or `rm -rf output/`. |
-| A 404 fetching `SHA256SUMS` | The tag you pinned predates checksums. Add `-var 'base_image_checksum=none'`. |
-| `Could not access KVM kernel module` | No `/dev/kvm`, or you are not in the `kvm` group. Drop `-var 'accelerator=kvm'` to build under emulation. |
-| QEMU exits immediately on macOS | Drop `-var 'accelerator=kvm'`; macOS has no KVM. |
-| `Could not open '/usr/share/OVMF/...'` | Firmware auto-detection missed yours. Pass `-var 'efi_firmware_code=...' -var 'efi_firmware_vars=...'`; both must be the same variant, so a 4M code file needs a 4M vars file. |
-| `Timeout waiting for SSH` | Usually a slow emulated boot. Build on Linux with KVM, or raise `ssh_timeout` in `build.pkr.hcl`. |
-| A step you added to `customize.sh` failed | Packer deletes `output/` on failure. Re-run with `-on-error=abort` to keep the VM and disk so you can look. |
-| The build succeeded but `packer` printed no build | You mistyped `-only`. Packer exits 0 having run nothing. |
 
 ## Files
 
