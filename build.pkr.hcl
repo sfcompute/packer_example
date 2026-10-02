@@ -41,10 +41,12 @@ variable "base_image_tag" {
     build prints the release it picked, so check the log if you need to
     know which one you got.
 
-    Set this to a tag to pin it, which is what you want if you need two
-    builds to produce the same bytes. Tags look like v20260930.063326 and
-    are listed by the release index; releases published before that index
-    existed cannot be pinned this way.
+    Set this to a tag for a repeatable starting point. It does not make
+    the build bit-for-bit reproducible -- customize.sh still installs
+    whatever the Ubuntu archive has that day -- but it fixes the base
+    image, so a rebuild next month starts from the same driver, CUDA and
+    kernel. Tags look like v20260930.063326 and are listed by the release
+    index; releases published before that index existed cannot be pinned.
   EOT
 }
 
@@ -289,5 +291,19 @@ build {
   provisioner "shell" {
     script           = "finalize.sh"
     environment_vars = ["DEBIAN_FRONTEND=noninteractive"]
+  }
+
+  # Otherwise the resolved tag survives only in terminal output. This is
+  # what you pass to base_image_tag to rebuild on the same base.
+  post-processor "manifest" {
+    only   = ["qemu.sfc_base"]
+    output = "output/sfc_base/manifest.json"
+
+    custom_data = {
+      base_image_tag    = local.sfc_release.tag
+      base_image_name   = var.base_image_name
+      base_image_url    = local.sfc_image.qcow2.url
+      base_image_sha256 = local.sfc_image.qcow2.sha256
+    }
   }
 }
