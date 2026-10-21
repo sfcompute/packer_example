@@ -15,6 +15,6 @@ chpasswd:
       password: packer
       type: text
 runcmd:
-  # The unit is ssh.service on both jammy and noble (sshd is an alias).
+  # The unit is ssh.service on both noble and resolute (sshd is an alias).
   - printf 'PasswordAuthentication yes\nPermitRootLogin yes\n' > /etc/ssh/sshd_config.d/10-packer.conf
   - systemctl restart ssh
