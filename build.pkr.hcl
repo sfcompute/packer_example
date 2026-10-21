@@ -51,15 +51,28 @@ variable "base_image_tag" {
 }
 
 variable "base_image_name" {
-  type        = string
-  default     = "ubuntu-24.04-cuda-13.2"
-  description = "Which image within the release (qemu.sfc_base only). Names look like ubuntu-<lts>-cuda-<major.minor>; `curl -fsSL https://tiny-llama.sfcc.xyz/latest.json | jq -r '.images[].name'` lists them."
+  type    = string
+  default = ""
+
+  description = <<-EOT
+    Which image within the release (qemu.sfc_base only).
+
+    Empty, the default, takes the image with the newest CUDA for
+    ubuntu_codename. A release carries one image per CUDA minor per
+    Ubuntu LTS and the set moves as NVIDIA and Canonical ship, so a
+    name written here goes stale; a rule does not.
+
+    Set this to build on a specific CUDA instead. Names look like
+    ubuntu-<lts>-cuda-<major.minor>, and
+    `curl -fsSL https://tiny-llama.sfcc.xyz/latest.json | jq -r '.images[].name'`
+    lists the ones in the current release.
+  EOT
 }
 
 variable "ubuntu_codename" {
   type        = string
   default     = "noble"
-  description = "Ubuntu cloud image to build on (qemu.ubuntu only). noble = 24.04 LTS, jammy = 22.04 LTS."
+  description = "Which Ubuntu to build on, for either starting point. noble = 24.04 LTS, resolute = 26.04 LTS. For qemu.ubuntu this names the cloud image; for qemu.sfc_base it picks the LTS when base_image_name is empty."
 }
 
 variable "nvidia_driver_branch" {
@@ -137,9 +150,24 @@ data "http" "sfc_release" {
 locals {
   sfc_release = jsondecode(data.http.sfc_release.body)
 
-  # Empty if base_image_name is not in the release, which fails the build
-  # here rather than downloading something else.
-  sfc_image = [for i in local.sfc_release.images : i if i.name == var.base_image_name][0]
+  # The images this build may pick from: the one named, or every image in
+  # the release for ubuntu_codename. Empty when the name or codename is not
+  # in the release, which fails the build here rather than downloading
+  # something else.
+  sfc_candidates = var.base_image_name != "" ? [
+    for i in local.sfc_release.images : i if i.name == var.base_image_name
+    ] : [
+    for i in local.sfc_release.images : i if i.ubuntu_codename == var.ubuntu_codename
+  ]
+
+  # Newest CUDA wins. Ranked numerically rather than by string, so a
+  # hypothetical 13.10 outranks 13.9 instead of sorting between 13.1 and
+  # 13.2.
+  sfc_cuda_rank = [
+    for i in local.sfc_candidates :
+    parseint(split(".", i.cuda_version)[0], 10) * 1000 + parseint(split(".", i.cuda_version)[1], 10)
+  ]
+  sfc_image = local.sfc_candidates[index(local.sfc_cuda_rank, max(local.sfc_cuda_rank...))]
 
   ubuntu_base_url = "https://cloud-images.ubuntu.com/${var.ubuntu_codename}/current"
 
@@ -195,7 +223,10 @@ source "qemu" "sfc_base" {
   iso_url      = local.sfc_image.qcow2.url
   iso_checksum = "sha256:${local.sfc_image.qcow2.sha256}"
 
-  vm_name          = "${var.base_image_name}-custom.raw"
+  # A fixed name, since the base image is resolved at build time: the
+  # upload command in the README stays copy-pasteable whatever the
+  # release picked. manifest.json beside it records which image that was.
+  vm_name          = "sfc-base-custom.raw"
   output_directory = "output/sfc_base"
 
   disk_image  = true
@@ -293,15 +324,16 @@ build {
     environment_vars = ["DEBIAN_FRONTEND=noninteractive"]
   }
 
-  # Otherwise the resolved tag survives only in terminal output. This is
-  # what you pass to base_image_tag to rebuild on the same base.
+  # Otherwise the resolved tag and image survive only in terminal output.
+  # These are what you pass to base_image_tag and base_image_name to
+  # rebuild on the same base.
   post-processor "manifest" {
     only   = ["qemu.sfc_base"]
     output = "output/sfc_base/manifest.json"
 
     custom_data = {
       base_image_tag    = local.sfc_release.tag
-      base_image_name   = var.base_image_name
+      base_image_name   = local.sfc_image.name
       base_image_url    = local.sfc_image.qcow2.url
       base_image_sha256 = local.sfc_image.qcow2.sha256
     }

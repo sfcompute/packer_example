@@ -84,17 +84,16 @@ such flag.
 Re-running? Packer refuses to overwrite `output/`. Pass `-force`, or
 `rm -rf output/` first.
 
-The image lands at `output/sfc_base/ubuntu-24.04-cuda-13.2-custom.raw`.
-Upload it:
+The image lands at `output/sfc_base/sfc-base-custom.raw`. Upload it:
 
 ```bash
-sf images upload --name my-image --file output/sfc_base/ubuntu-24.04-cuda-13.2-custom.raw
+sf images upload --name my-image --file output/sfc_base/sfc-base-custom.raw
 ```
 
 Before you push 20 GiB, confirm it is what the platform expects:
 
 ```bash
-qemu-img info output/sfc_base/ubuntu-24.04-cuda-13.2-custom.raw
+qemu-img info output/sfc_base/sfc-base-custom.raw
 ```
 
 You want `file format: raw` and a virtual size at or under 75 GiB. The real
@@ -125,15 +124,15 @@ driver. Remove all four, or the template will not load:
 - the `source "qemu" "ubuntu"` block
 - the `"source.qemu.ubuntu"` line from the `build` block's `sources` list
 
-The `ubuntu_codename` and `nvidia_driver_branch` variables become unused too,
-and can go.
+The `nvidia_driver_branch` variable becomes unused too, and can go.
+`ubuntu_codename` stays: the base-image path uses it to pick the LTS.
 
 ## Choosing a base image
 
-By default the build resolves the current release at build time — there is no
-version to keep up to date in this repo. Packer prints the one it picked:
-
-Look for the `Trying ...` line in the output — it names the release tag.
+By default the build resolves the current release at build time and, within
+it, the Ubuntu 24.04 image with the newest CUDA — there is no version to keep
+up to date in this repo. Look for the `Trying ...` line in Packer's output: it
+names the release tag and the image it picked.
 
 To see what is available in the SF Compute release index (`tiny-llama.sfcc.xyz`,
 operated by SF Compute):
@@ -142,14 +141,22 @@ operated by SF Compute):
 curl -fsSL https://tiny-llama.sfcc.xyz/latest.json | jq -r '.tag, (.images[].name)'
 ```
 
-Pick a different image from the release with `base_image_name`:
+Each release carries one image per CUDA minor for each of the two newest Ubuntu
+LTS releases. To build on a different LTS, change `ubuntu_codename`; you still
+get its newest CUDA:
 
 ```bash
-packer build -only='qemu.sfc_base' -var 'base_image_name=ubuntu-22.04-cuda-13.1' .
+packer build -only='qemu.sfc_base' -var 'ubuntu_codename=resolute' .
 ```
 
-The output filename follows the image name, so that one lands at
-`output/sfc_base/ubuntu-22.04-cuda-13.1-custom.raw`.
+To build on a specific CUDA, name the image with `base_image_name`:
+
+```bash
+packer build -only='qemu.sfc_base' -var 'base_image_name=ubuntu-24.04-cuda-13.3' .
+```
+
+The output filename is the same whichever image was picked;
+`output/sfc_base/manifest.json` records which one it was.
 
 **Pin the release if you need a repeatable starting point.** Tracking the latest
 means a rebuild next month begins from a different base image — different driver,
@@ -165,9 +172,9 @@ You don't supply a checksum. The release index lists each image's sha256 beside
 its URL and the build enforces it, so a corrupted or truncated download fails
 instead of producing a broken image.
 
-Each build writes `output/sfc_base/manifest.json` recording the release it
-resolved. That is where to find the tag to pass to `base_image_tag` if you want
-to rebuild on the same base.
+Each build writes `output/sfc_base/manifest.json` recording the release and
+image it resolved. That is where to find the values to pass to `base_image_tag`
+and `base_image_name` if you want to rebuild on the same base.
 
 ## What the boilerplate is doing
 
@@ -194,7 +201,7 @@ build, and `finalize.sh` removes it.
 | `Datasource.Execute failed: ... dial tcp ... no such host`, or `connection refused` | The build looks up the base image over the network before it starts, for either starting point. Check you can reach `https://tiny-llama.sfcc.xyz/latest.json`; behind a proxy, set `HTTPS_PROXY`. |
 | `Call to function "jsondecode" failed: invalid character '<'` | Something returned HTML instead of the release index — usually a captive portal or a proxy login page. Get past it in a browser, then retry. |
 | `invalid checksum: encoding/hex: invalid byte` from `packer validate` | Plain `validate` does not run data sources, so the digest is still unresolved. Use `packer validate -evaluate-datasources .`. |
-| `The given key does not identify an element in this collection value` | `base_image_name` is not in that release. List the names with the `jq` command under [Choosing a base image](#choosing-a-base-image). |
+| `Call to function "max" failed: must pass at least one number` | No image in that release matches: `base_image_name` is not in it, or `ubuntu_codename` is an LTS it does not carry. List the names with the `jq` command under [Choosing a base image](#choosing-a-base-image). |
 | `Could not access KVM kernel module` | No `/dev/kvm`, or you are not in the `kvm` group. Drop `-var 'accelerator=kvm'` to build under emulation. |
 | QEMU exits immediately on macOS | Drop `-var 'accelerator=kvm'`; macOS has no KVM. |
 | `Could not open '/usr/share/OVMF/...'` | Firmware auto-detection missed yours. Pass `-var 'efi_firmware_code=...' -var 'efi_firmware_vars=...'`; both must be the same variant, so a 4M code file needs a 4M vars file. |
