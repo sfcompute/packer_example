@@ -6,11 +6,19 @@ on:
     branches: [master]
   # The template resolves the SF Compute release index at build time, so
   # the repo can break without a commit: a release that drops the LTS the
-  # default keys on, or an index that stops answering, fails validate. The
-  # daily run finds that before a reader does.
+  # default keys on, or an index that stops answering, fails validate.
+  # The daily run finds that before a reader does.
+  #
+  # GitHub disables scheduled workflows in a public repository after 60
+  # days without repository activity, and this repo is meant to go quiet.
+  # Re-enable it from the Actions tab when that happens; firing
+  # workflow_dispatch from the release pipeline instead would be immune.
   schedule:
     - cron: "17 6 * * *"
   workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   check:
@@ -26,11 +34,6 @@ jobs:
         with:
           version: "1.15.0"
 
-      # OVMF so firmware auto-detection resolves the way it does on a real
-      # Ubuntu build host, rather than through its fallback path.
-      - name: Install OVMF
-        run: sudo apt-get install -y -qq ovmf
-
       - name: Install plugins
         run: packer init .
 
@@ -39,7 +42,8 @@ jobs:
 
       # -evaluate-datasources makes validate fetch the release index and
       # resolve the base image, which is the part worth checking: plain
-      # validate stops at an unresolved checksum.
+      # validate stops at an unresolved checksum. Firmware paths are not
+      # checked by validate, so the runner needs no OVMF.
       - name: Validate, resolving the live release index
         run: packer validate -evaluate-datasources .
 

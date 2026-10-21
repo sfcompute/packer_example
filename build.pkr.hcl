@@ -45,8 +45,10 @@ variable "base_image_tag" {
     the build bit-for-bit reproducible -- customize.sh still installs
     whatever the Ubuntu archive has that day -- but it fixes the base
     image, so a rebuild next month starts from the same driver, CUDA and
-    kernel. Tags look like v20260930.063326 and are listed by the release
-    index; releases published before that index existed cannot be pinned.
+    kernel. Tags look like v20260930.063326. latest.json carries the
+    current one and each build's output/sfc_base/manifest.json records
+    the one it used; there is no list of older tags, and releases
+    published before the index existed cannot be pinned.
   EOT
 }
 
@@ -85,7 +87,7 @@ variable "nvidia_driver_branch" {
     Must exist in the Ubuntu archive for your codename:
     nvidia-headless-<branch>-server in <codename>-updates/restricted and
     nvidia-fabricmanager-<branch> in <codename>-updates/multiverse. 590
-    is present for both jammy and noble.
+    is present for both noble and resolute.
 
     Ubuntu may resolve the branch you name forward: as of this writing
     the 590 packages are transitional and depend on their 595
@@ -154,18 +156,22 @@ locals {
   # the release for ubuntu_codename. Empty when the name or codename is not
   # in the release, which fails the build here rather than downloading
   # something else.
+  # The variant filter keeps a future non-base build published into the
+  # same release (a "-minimal", say) from tying with the base image on
+  # CUDA and winning on list order.
   sfc_candidates = var.base_image_name != "" ? [
     for i in local.sfc_release.images : i if i.name == var.base_image_name
     ] : [
-    for i in local.sfc_release.images : i if i.ubuntu_codename == var.ubuntu_codename
+    for i in local.sfc_release.images : i
+    if i.ubuntu_codename == var.ubuntu_codename && try(i.variant, "base") == "base"
   ]
 
   # Newest CUDA wins. Ranked numerically rather than by string, so a
   # hypothetical 13.10 outranks 13.9 instead of sorting between 13.1 and
-  # 13.2.
+  # 13.2. A version with no minor ranks as .0.
   sfc_cuda_rank = [
     for i in local.sfc_candidates :
-    parseint(split(".", i.cuda_version)[0], 10) * 1000 + parseint(split(".", i.cuda_version)[1], 10)
+    parseint(split(".", i.cuda_version)[0], 10) * 1000 + try(parseint(split(".", i.cuda_version)[1], 10), 0)
   ]
   sfc_image = local.sfc_candidates[index(local.sfc_cuda_rank, max(local.sfc_cuda_rank...))]
 

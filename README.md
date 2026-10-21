@@ -127,6 +127,11 @@ driver. Remove all four, or the template will not load:
 The `nvidia_driver_branch` variable becomes unused too, and can go.
 `ubuntu_codename` stays: the base-image path uses it to pick the LTS.
 
+Going the other way, keeping only stock Ubuntu, also means removing the
+`data "http"` block, the `sfc_*` locals and the `manifest` post-processor.
+Packer evaluates data sources for every build, so until they are gone the
+stock-Ubuntu path still needs the release index to be reachable.
+
 ## Choosing a base image
 
 By default the build resolves the current release at build time and, within
@@ -152,7 +157,7 @@ packer build -only='qemu.sfc_base' -var 'ubuntu_codename=resolute' .
 To build on a specific CUDA, name the image with `base_image_name`:
 
 ```bash
-packer build -only='qemu.sfc_base' -var 'base_image_name=ubuntu-24.04-cuda-13.3' .
+packer build -only='qemu.sfc_base' -var 'base_image_name=<name from latest.json>' .
 ```
 
 The output filename is the same whichever image was picked;
@@ -197,7 +202,7 @@ build, and `finalize.sh` removes it.
 | `E: Unable to locate package packer` | Packer is not in the Ubuntu archive. See [Requirements](#requirements). |
 | `packer init` reports an unknown command | Your Packer predates 1.7. Ubuntu 22.04 ships 1.6.6; install a current one per Requirements. |
 | `Output directory 'output/...' already exists` | `packer build -force ...`, or `rm -rf output/`. |
-| `Datasource.Execute failed: ... Response code: 404` | The tag you pinned has no release index — pick one from `latest.json`, or drop `-var base_image_tag`. If you did not pin a tag, the index itself is missing: check with `curl -fsSL https://tiny-llama.sfcc.xyz/latest.json`. |
+| `Datasource.Execute failed: ... Response code: 404` | The tag you pinned has no release index. Use the tag from `latest.json` (the current release) or from an earlier build's `output/sfc_base/manifest.json`, or drop `-var base_image_tag`. If you did not pin a tag, the index itself is missing: check with `curl -fsSL https://tiny-llama.sfcc.xyz/latest.json`. |
 | `Datasource.Execute failed: ... dial tcp ... no such host`, or `connection refused` | The build looks up the base image over the network before it starts, for either starting point. Check you can reach `https://tiny-llama.sfcc.xyz/latest.json`; behind a proxy, set `HTTPS_PROXY`. |
 | `Call to function "jsondecode" failed: invalid character '<'` | Something returned HTML instead of the release index — usually a captive portal or a proxy login page. Get past it in a browser, then retry. |
 | `invalid checksum: encoding/hex: invalid byte` from `packer validate` | Plain `validate` does not run data sources, so the digest is still unresolved. Use `packer validate -evaluate-datasources .`. |
