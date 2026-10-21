@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+  # The template resolves the SF Compute release index at build time, so
+  # the repo can break without a commit: a release that drops the LTS the
+  # default keys on, or an index that stops answering, fails validate. The
+  # daily run finds that before a reader does.
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    env:
+      # `packer init` fetches the qemu plugin from GitHub releases; the
+      # unauthenticated rate limit is low enough to flake a shared runner.
+      PACKER_GITHUB_API_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-packer@v3
+        with:
+          version: "1.15.0"
+
+      # OVMF so firmware auto-detection resolves the way it does on a real
+      # Ubuntu build host, rather than through its fallback path.
+      - name: Install OVMF
+        run: sudo apt-get install -y -qq ovmf
+
+      - name: Install plugins
+        run: packer init .
+
+      - name: Check formatting
+        run: packer fmt -check -diff .
+
+      # -evaluate-datasources makes validate fetch the release index and
+      # resolve the base image, which is the part worth checking: plain
+      # validate stops at an unresolved checksum.
+      - name: Validate, resolving the live release index
+        run: packer validate -evaluate-datasources .
+
+      - name: Lint shell scripts
+        run: shellcheck ./*.sh
